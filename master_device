@@ -1,0 +1,121 @@
+#include <iostream>
+#include <windows.h>
+#include "Comm.hpp"
+#include "bplprotocol.h"
+#include "packetID.h"
+
+using namespace std;
+
+typedef struct _packet_struct {
+   uint8_t packetID, deviceID, length, _crc8;
+   float joint[5];
+} packet_struct_t;
+
+typedef union _packet {
+   packet_struct_t packet_struct;
+   uint8_t buffer[sizeof(packet_struct_t)];
+
+}packet_t;
+
+
+
+int main(void)  {
+   
+   CComm serial;
+   packet_t packet;
+   
+	const char* port = "COM4";
+
+   static int maxIter, readSize = 0;
+   uint8_t tempData;
+   uint8_t endIter = 1;
+   uint8_t plotCnt = 0;
+   
+   uint8_t deviceCnt = 0;
+   uint8_t deviceCntPre = 0;
+   uint8_t bufCnt[5] = {0,};
+   
+   uint8_t _recvBuf[255] = {0,}; 
+   uint8_t _tempBuf[255] = {0,};
+   uint8_t _decodedBuf[255] = {0,};
+   
+   uint8_t _transBuf[255] = {0, };
+   Packet _transPacket;
+   uint8_t transData[1] = {0x02};
+
+
+	serial.Open(port,115200);
+
+   if (!serial.isOpen()){
+      cout << "Serial Connecting Failed \n";
+      return 0;
+   }
+   else  cout << "Serial Connecting Success \n";
+
+   if(serial.isOpen()) {
+      memset(bufCnt,0,10);
+      memset(_recvBuf,0,255);
+      memset(_decodedBuf,0,255);
+
+      while(endIter) {
+         
+         while(maxIter < 100) {//serial read, 100회 이상 읽지 못하면 fail 출력
+            readSize = serial.Read((char*)_recvBuf, 255);
+            if(readSize != 0) break;
+
+            if(++maxIter > 100){
+               cout << "Data Receive Fail \n";
+               endIter = 0;
+               return 0;
+            }
+         }
+         
+
+         //DeviceID = 0xc1,0xc2,0xc3,0xc4,0xc5
+         for(int j = 0; j < 8 ; j++) {//한 번 수신한 data에서 각 device의 packet 나누기
+            for(deviceCnt = 3+deviceCntPre ; deviceCnt < readSize ; deviceCnt++) {//master device ID 를 사용하여 packet parsing
+               if(_recvBuf[deviceCnt] < 0xC6 && _recvBuf[deviceCnt] > 0xC0 && _recvBuf[deviceCnt+3] == 0) {//deviceCnt는 수신 데이터에서 deviceID의 위치를 저장
+                  tempData = _recvBuf[deviceCnt]-193;//ID 0xC0의 위치는 bufCnt 0번부터 ... 0xC5의 위치는 bufCnt 4번에 저장 
+                  bufCnt[tempData] = deviceCnt;
+                  deviceCntPre = deviceCnt;
+                  break;
+               }
+            }
+         }
+         deviceCnt = 0;
+         deviceCntPre = 0;
+
+         plotCnt = (plotCnt + 1)%10;
+
+         for(int j = 0 ; j < 5 ; j++) {//0xC1 부터 0xC5 5개의 packet parsing
+            memcpy(&packet.packet_struct,&_recvBuf[bufCnt[j]-1],4);//packetID, deviceID, length, _crc8 저장
+            memcpy(_tempBuf,&_recvBuf[bufCnt[j]-packet.packet_struct.length+2],packet.packet_struct.length+1);//cobs 부터 시작해서 crc까지 복사 tempBuf를 decoding 할 것임
+            _tempBuf[packet.packet_struct.length+1] = 0xFF;//0x00 자리에 0xFF 로 바꿈
+
+
+            tempData = cobs_decode(_tempBuf, packet.packet_struct.length+1, _decodedBuf);//_tempBuf에 담은 packet decoding 후 _decodedBuf에 담음
+            tempData = crc8(0xff, _decodedBuf, packet.packet_struct.length-1);//decoding된 buffer에서 crc 생성
+
+            if(tempData == packet.packet_struct._crc8) {//crc check 완료시에만 데이터 저장
+               memcpy(&packet.buffer[4+4*j],_decodedBuf,packet.packet_struct.length-4);
+               
+               if(plotCnt == 0) {//data 확인 디버깅용
+                  printf("%d : union data : %f\n",j,packet.packet_struct.joint[j]);
+               }
+             
+            }  
+         }
+         if(plotCnt == 0)  cout << "\n";     
+         Sleep(50);
+      }
+         
+   }
+   //serial.Write((char*)packet.buffer, sizeof(Packet_t));
+
+   serial.Close();
+
+   
+
+	return 0;
+
+}
